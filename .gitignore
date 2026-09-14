@@ -1,0 +1,16 @@
+# build artifacts
+/bin/
+/dist/
+
+# editor / OS
+.DS_Store
+*.swp
+.idea/
+.vscode/
+
+# local manifests generated during testing
+climan.yaml.tmp
+
+# local environment / nix direnv state
+.env
+.direnv/

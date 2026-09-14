@@ -1,0 +1,101 @@
+name: Release
+
+# Cut a release by pushing a tag:  git tag v0.1.0 && git push origin v0.1.0
+# Builds signed-agnostic static binaries for every platform, packages them
+# with LICENSE/README, and attaches them (plus checksums) to a GitHub Release.
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build ${{ matrix.os }}/${{ matrix.arch }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: linux
+            arch: amd64
+          - os: linux
+            arch: arm64
+          - os: darwin
+            arch: amd64
+          - os: darwin
+            arch: arm64
+          - os: windows
+            arch: amd64
+          - os: windows
+            arch: arm64
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Build
+        env:
+          GOOS: ${{ matrix.os }}
+          GOARCH: ${{ matrix.arch }}
+          CGO_ENABLED: '0'
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          go build -trimpath -ldflags "-s -w -X go.solved.gg/climan/internal/cli.Version=${VERSION}" \
+            -o dist/climan .
+
+      - name: Package
+        env:
+          GOOS: ${{ matrix.os }}
+          GOARCH: ${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          VERSION="${GITHUB_REF_NAME#v}"
+          NAME="climan-${VERSION}-${GOOS}-${GOARCH}"
+          mkdir -p package
+          cp dist/climan package/climan
+          cp LICENSE README.md package/
+          if [ "${GOOS}" = "windows" ]; then
+            mv package/climan package/climan.exe
+            (cd package && python3 -m zipfile -c "../dist/${NAME}.zip" .)
+          else
+            (cd package && tar -czf "../dist/${NAME}.tar.gz" .)
+          fi
+
+      # The raw binary and any stray files stay out of the upload; only the
+      # archives are carried to the release job.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-${{ matrix.os }}-${{ matrix.arch }}
+          path: |
+            dist/*.tar.gz
+            dist/*.zip
+
+  release:
+    name: Publish release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: dist-*
+          merge-multiple: true
+          path: dist
+
+      - name: Checksums
+        run: |
+          cd dist
+          sha256sum climan-* > checksums.txt
+          cat checksums.txt
+
+      # A single job uploads every asset exactly once, so there is no
+      # cross-job collision on the (immutable, published) release.
+      - uses: softprops/action-gh-release@v3
+        with:
+          files: dist/*
+          generate_release_notes: true

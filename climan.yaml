@@ -1,0 +1,37 @@
+# climan.yaml — declarative manifest for climan
+#
+# Declare the CLIs you want. `climan install` reconciles your system against
+# this file; `climan update` refreshes everything; `climan list` shows state.
+#
+#   version: manifest schema version (do not change)
+#   bin_dir: where climan places standalone binaries (doctl, …)
+#   tools:   name + desired version ("latest" or a pinned version)
+#
+# Full catalog: mise, asdf, sdkman, flyctl, doctl, grok, codex, claude
+# Manage interactively: climan tui
+
+version: 1
+bin_dir: ~/.local/bin
+
+tools:
+  # ---- version managers ----
+  - name: mise
+    version: latest
+  - name: asdf
+    version: latest
+  - name: sdkman
+    version: latest
+
+  # ---- cloud ----
+  - name: flyctl
+    version: latest
+  - name: doctl
+    version: latest
+
+  # ---- AI coding agents ----
+  - name: grok
+    version: latest
+  - name: codex
+    version: latest
+  - name: claude
+    version: latest

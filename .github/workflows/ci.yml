@@ -1,0 +1,64 @@
+name: CI
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: gofmt
+        run: |
+          unformatted="$(gofmt -l .)"
+          if [ -n "$unformatted" ]; then
+            echo "gofmt needed for:"; printf '%s\n' "$unformatted"; exit 1
+          fi
+      - uses: golangci/golangci-lint-action@v9
+        with:
+          version: v2.12.2
+
+  test:
+    name: Test (go ${{ matrix.go }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        go: ['1.25.x', '1.26.x']
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version: ${{ matrix.go }}
+          cache: true
+      - name: Vet
+        run: go vet ./...
+      - name: Test (race)
+        run: go test -race -count=1 ./...
+      - name: Build
+        run: go build -trimpath -ldflags "-s -w" -o climan .
+      - name: Cross-compile check
+        run: |
+          GOOS=darwin GOARCH=arm64 CGO_ENABLED=0 go build -o /dev/null .
+          GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -o /dev/null .
+      - name: Smoke test
+        run: |
+          ./climan version
+          ./climan doctor
+          ./climan list --all >/dev/null
+          ./climan --dry-run install >/dev/null
