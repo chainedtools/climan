@@ -44,6 +44,15 @@ version, and any setup notes. Exits non-zero when a prerequisite is missing.`,
 			a.printf("\nplatform: %s/%s\n", osName, arch)
 			a.printf("manifest: %s (%d tools)\n", a.configPath(), len(a.cfg.Tools))
 			a.printf("bin_dir:  %s\n", a.cfg.BinDir)
+			if sess, err := a.authFlow().WhoAmI(cmd.Context()); err != nil {
+				a.printf("auth:     error (%v)\n", err)
+			} else if sess == nil {
+				a.println("auth:     not signed in (climan login)")
+			} else if sess.Email != "" {
+				a.printf("auth:     %s\n", sess.Email)
+			} else {
+				a.printf("auth:     %s\n", sess.UserID)
+			}
 
 			// Per-tool checks.
 			a.println("\ntools:")

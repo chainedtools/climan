@@ -37,6 +37,7 @@ type globalOptions struct {
 	verbose    bool
 	yes        bool
 	binDir     string
+	apiURL     string
 }
 
 // app carries shared state through command execution.
@@ -82,6 +83,7 @@ scripts.`,
 	pf.BoolVarP(&opts.verbose, "verbose", "v", false, "stream installer output")
 	pf.BoolVarP(&opts.yes, "yes", "y", false, "skip confirmation prompts")
 	pf.StringVar(&opts.binDir, "bin-dir", "", "directory for standalone binaries (default ~/.local/bin)")
+	pf.StringVar(&opts.apiURL, "api-url", "", "chained.tools API base (default https://api.chained.tools, or CLIMAN_API_URL)")
 
 	root.AddCommand(
 		newInitCmd(a),
@@ -91,6 +93,9 @@ scripts.`,
 		newRemoveCmd(a),
 		newListCmd(a),
 		newDoctorCmd(a),
+		newLoginCmd(a),
+		newLogoutCmd(a),
+		newWhoAmICmd(a),
 		newTUICmd(a),
 		newVersionCmd(),
 	)

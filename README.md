@@ -70,11 +70,27 @@ tools:
 | `climan list` / `ls` / `status` | table of tools: state, version, location |
 | `climan list --all` | include tools not in the manifest |
 | `climan doctor` | check prerequisites and diagnose tool setup |
+| `climan login` | PKCE sign-in via api.chained.tools (Clerk consent at accounts.chained.tools) |
+| `climan logout` | revoke and drop stored credentials |
+| `climan whoami` | print the signed-in identity |
 | `climan tui` | full-screen graphical manager |
 | `climan version` | print version |
 
 Global flags: `--config <path>`, `--dry-run`, `--verbose`, `--yes`,
-`--bin-dir <path>`.
+`--bin-dir <path>`, `--api-url <url>`.
+
+## Auth
+
+`climan login` is OAuth 2.0 authorization-code + PKCE against
+`https://api.chained.tools/v1/auth`. The API 302s the browser to
+[Clerk consent](https://accounts.chained.tools/oauth-consent). After
+approval, climan exchanges the code at the API token endpoint, stores
+tokens in `~/.config/climan/credentials.json` (mode 0600), and fetches
+identity from `GET /v1/cli/credentials`.
+
+Override the API with `--api-url` or `CLIMAN_API_URL`. Override the
+public OAuth client id with `CLIMAN_CLIENT_ID` if the API's
+`/v1/auth/login-config` does not supply one.
 
 ## TUI
 
@@ -132,6 +148,7 @@ internal/config/           climan.yaml manifest loading/validation
 internal/installer/        install / update / remove / status engine
 internal/system/           shell exec, downloads, path helpers
 internal/cli/              scriptable cobra commands
+internal/auth/             PKCE login against api.chained.tools
 internal/tui/              bubbletea TUI
 ```
 
