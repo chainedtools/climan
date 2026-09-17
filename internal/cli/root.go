@@ -2,6 +2,7 @@
 package cli
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"os"
@@ -9,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
+	"go.solved.gg/climan/internal/auth"
 	"go.solved.gg/climan/internal/config"
 	"go.solved.gg/climan/internal/installer"
 	"go.solved.gg/climan/internal/registry"
@@ -85,6 +87,13 @@ scripts.`,
 	pf.StringVar(&opts.binDir, "bin-dir", "", "directory for standalone binaries (default ~/.local/bin)")
 	pf.StringVar(&opts.apiURL, "api-url", "", "chained.tools API base (default https://api.chained.tools, or CLIMAN_API_URL)")
 
+	root.PersistentPreRunE = func(cmd *cobra.Command, _ []string) error {
+		if skipHydrate(cmd) {
+			return nil
+		}
+		return a.hydrate(cmd.Context())
+	}
+
 	root.AddCommand(
 		newInitCmd(a),
 		newAddCmd(a),
@@ -102,6 +111,36 @@ scripts.`,
 	return root
 }
 
+func skipHydrate(cmd *cobra.Command) bool {
+	switch cmd.Name() {
+	case "login", "logout", "version", "help", "completion", "climan", "whoami":
+		return true
+	default:
+		return false
+	}
+}
+
+func (a *app) hydrate(ctx context.Context) error {
+	flow := a.authFlow()
+	sess, err := flow.WhoAmI(ctx)
+	if err != nil {
+		return err
+	}
+	if sess == nil {
+		return fmt.Errorf("not signed in — run 'climan login'")
+	}
+	reg, err := flow.Client.FetchTools(ctx, sess.AccessToken)
+	if err != nil {
+		if auth.IsUnauthorized(err) {
+			return fmt.Errorf("not signed in — run 'climan login'")
+		}
+		fmt.Fprintf(a.stderr, "climan: API catalog unavailable (%v); using built-in tools\n", err)
+		return nil
+	}
+	a.reg = reg
+	return nil
+}
+
 // Execute runs the CLI and returns a process exit code.
 func Execute() int {
 	root := NewRoot()
@@ -114,7 +153,7 @@ func Execute() int {
 
 // loadConfig loads the manifest (or defaults) honouring the --config flag.
 func (a *app) loadConfig() error {
-	cfg, err := config.Load(a.opts.configPath)
+	cfg, err := config.LoadWith(a.opts.configPath, a.reg)
 	if err != nil {
 		return err
 	}
@@ -207,6 +246,12 @@ func (a *app) installerFor(cmd *cobra.Command) *installer.Installer {
 	inst.DryRun = a.opts.dryRun
 	if a.opts.verbose {
 		inst.Out = cmd.ErrOrStderr()
+	}
+	inst.UseRegistry(a.reg)
+	flow := a.authFlow()
+	inst.API = flow.Client
+	if sess, err := flow.WhoAmI(cmd.Context()); err == nil && sess != nil {
+		inst.AccessToken = sess.AccessToken
 	}
 	return inst
 }

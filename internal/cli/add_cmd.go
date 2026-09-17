@@ -23,7 +23,7 @@ edit the manifest, or --version to pin a specific version.`,
 			if err := a.loadConfig(); err != nil {
 				return err
 			}
-			if err := a.cfg.Add(name, version); err != nil {
+			if err := a.cfg.AddWith(a.reg, name, version); err != nil {
 				return err
 			}
 			path := a.opts.configPath

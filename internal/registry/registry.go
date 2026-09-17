@@ -6,9 +6,12 @@ package registry
 
 import (
 	"fmt"
+	"os"
 	"runtime"
 	"sort"
 	"strings"
+
+	"go.solved.gg/climan/internal/system"
 )
 
 // Category groups tools in the TUI and in list output.
@@ -18,6 +21,8 @@ const (
 	CategoryVersionManager Category = "version-manager"
 	CategoryCloud          Category = "cloud"
 	CategoryAI             Category = "ai"
+	CategoryChained        Category = "chained"
+	CategorySDK            Category = "sdk"
 )
 
 func (c Category) Label() string {
@@ -28,6 +33,10 @@ func (c Category) Label() string {
 		return "Cloud"
 	case CategoryAI:
 		return "AI Coding"
+	case CategoryChained:
+		return "chained.tools"
+	case CategorySDK:
+		return "SDKs"
 	default:
 		return string(c)
 	}
@@ -47,6 +56,10 @@ const (
 	MethodGit MethodKind = "git"
 	// MethodSelf runs a subcommand provided by the tool itself (e.g. `mise self-update`).
 	MethodSelf MethodKind = "self"
+	// MethodReleases downloads a first-party artifact from the locked releases host.
+	MethodReleases MethodKind = "releases"
+	// MethodSdks downloads a public SDK tarball from sdks.chained.tools.
+	MethodSdks MethodKind = "sdks"
 )
 
 // Method describes a single way to install/update a tool.
@@ -73,6 +86,9 @@ type Method struct {
 
 	// Self: args run against the installed binary, e.g. ["self-update"].
 	SelfCmd []string
+
+	// Releases / SDKs: product slug on the corresponding host.
+	Slug string
 
 	// Note is surfaced to the user after running this method.
 	Note string
@@ -105,6 +121,19 @@ type Tool struct {
 	Version func(path string) (string, error)
 	// Notes shown in `climan doctor` / after install.
 	Notes string
+
+	// Init is true when `climan init` should declare this tool.
+	Init bool
+	// Language is set for SDK recipes (zig/gleam/elixir).
+	Language string
+	// DetectKind is "path" (default) or "file".
+	DetectKind string
+	// DetectFile is a ~/… path used when DetectKind is "file".
+	DetectFile string
+	// VersionKind is "args" (default) or "bash".
+	VersionKind string
+	// VersionScript is a bash snippet used when VersionKind is "bash".
+	VersionScript string
 }
 
 // Registry holds every known tool, keyed by name.
@@ -117,6 +146,7 @@ type Registry struct {
 func New() *Registry {
 	r := &Registry{tools: map[string]*Tool{}}
 	for _, t := range allTools() {
+		t.Init = true
 		r.tools[t.Name] = t
 		r.order = append(r.order, t.Name)
 	}
@@ -154,7 +184,7 @@ func (r *Registry) ByCategory() [][2]any {
 		groups[t.Category] = append(groups[t.Category], t)
 	}
 	var order []Category
-	for _, c := range []Category{CategoryVersionManager, CategoryCloud, CategoryAI} {
+	for _, c := range []Category{CategoryVersionManager, CategoryCloud, CategoryAI, CategoryChained, CategorySDK} {
 		if _, ok := groups[c]; ok {
 			order = append(order, c)
 		}
@@ -369,6 +399,13 @@ func (t *Tool) DetectPath() (string, bool) {
 	if t.Detect != nil {
 		return t.Detect()
 	}
+	if t.DetectKind == "file" && t.DetectFile != "" {
+		p := system.Expand(t.DetectFile)
+		if _, err := os.Stat(p); err == nil {
+			return p, true
+		}
+		return "", false
+	}
 	for _, bin := range t.Binaries {
 		if p, err := lookPath(bin); err == nil {
 			return p, true
@@ -381,6 +418,9 @@ func (t *Tool) DetectPath() (string, bool) {
 func (t *Tool) VersionOf(path string) (string, error) {
 	if t.Version != nil {
 		return t.Version(path)
+	}
+	if t.VersionKind == "bash" && t.VersionScript != "" {
+		return runBash(t.VersionScript)
 	}
 	if len(t.Binaries) == 0 {
 		return "", fmt.Errorf("no binaries defined for %s", t.Name)

@@ -11,15 +11,15 @@ import (
 
 // Flow is the interactive PKCE login against api.chained.tools.
 type Flow struct {
-	Client     *Client
-	ClientID   string
-	StorePath  string
-	Stdout     io.Writer
-	Stderr     io.Writer
-	OpenURL    func(string) error
-	Now        func() time.Time
-	Wait       func(ctx context.Context, l *Listener) (Callback, error)
-	NoBrowser  bool
+	Client    *Client
+	ClientID  string
+	StorePath string
+	Stdout    io.Writer
+	Stderr    io.Writer
+	OpenURL   func(string) error
+	Now       func() time.Time
+	Wait      func(ctx context.Context, l *Listener) (Callback, error)
+	NoBrowser bool
 }
 
 func (f *Flow) stdout() io.Writer {

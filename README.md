@@ -88,6 +88,16 @@ approval, climan exchanges the code at the API token endpoint, stores
 tokens in `~/.config/climan/credentials.json` (mode 0600), and fetches
 identity from `GET /v1/cli/credentials`.
 
+Install, list, TUI, and other catalog commands then call
+`GET /v1/climan/tools` (401 with a `login` URL if the session is missing —
+run `climan login`, do not follow a 302 to `/v1/auth`). First-party
+binaries (`build`, `linup`, climan self-update) use `GET /v1/releases/...`
+to mint a short-lived pull ticket, then `sendfile` from
+`releases.chained.tools`. SDK tarballs stay **public** on
+`sdks.chained.tools` so CI `zig fetch` and the API Docker build keep
+working; `GET /v1/sdks/*` is authenticated catalog sugar that returns
+those public URLs.
+
 Override the API with `--api-url` or `CLIMAN_API_URL`. Override the
 public OAuth client id with `CLIMAN_CLIENT_ID` if the API's
 `/v1/auth/login-config` does not supply one.

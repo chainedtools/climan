@@ -72,6 +72,14 @@ func TestEveryToolHasInstallMethod(t *testing.T) {
 				if m.GitRepo == "" || m.GitDir == "" {
 					t.Errorf("%s git method incomplete: %+v", tool.Name, m)
 				}
+			case MethodReleases:
+				if m.Slug == "" || m.Asset == "" || m.ExeIn == "" {
+					t.Errorf("%s releases method incomplete: %+v", tool.Name, m)
+				}
+			case MethodSdks:
+				if m.Slug == "" {
+					t.Errorf("%s sdks method missing slug", tool.Name)
+				}
 			}
 		}
 	}

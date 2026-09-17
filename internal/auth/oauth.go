@@ -3,12 +3,15 @@ package auth
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
 	"strings"
 	"time"
+
+	"go.solved.gg/climan/internal/registry"
 )
 
 const (
@@ -24,16 +27,16 @@ const (
 
 // LoginConfig is GET /v1/auth/login-config.
 type LoginConfig struct {
-	Issuer                 string   `json:"issuer"`
-	AuthorizationEndpoint  string   `json:"authorization_endpoint"`
-	TokenEndpoint          string   `json:"token_endpoint"`
-	UserinfoEndpoint       string   `json:"userinfo_endpoint"`
-	RevocationEndpoint     string   `json:"revocation_endpoint"`
-	JWKSURI                string   `json:"jwks_uri"`
-	ConsentURL             string   `json:"consent_url"`
-	ClientID               string   `json:"client_id"`
-	Scopes                 string   `json:"scopes"`
-	CodeChallengeMethods   []string `json:"code_challenge_methods_supported"`
+	Issuer                string   `json:"issuer"`
+	AuthorizationEndpoint string   `json:"authorization_endpoint"`
+	TokenEndpoint         string   `json:"token_endpoint"`
+	UserinfoEndpoint      string   `json:"userinfo_endpoint"`
+	RevocationEndpoint    string   `json:"revocation_endpoint"`
+	JWKSURI               string   `json:"jwks_uri"`
+	ConsentURL            string   `json:"consent_url"`
+	ClientID              string   `json:"client_id"`
+	Scopes                string   `json:"scopes"`
+	CodeChallengeMethods  []string `json:"code_challenge_methods_supported"`
 }
 
 // TokenSet is a subset of the OAuth token response.
@@ -51,6 +54,60 @@ type UserInfo struct {
 	Email string `json:"email"`
 }
 
+// StatusError is an HTTP error from the API.
+type StatusError struct {
+	Status int
+	URL    string
+	Body   string
+}
+
+func (e *StatusError) Error() string {
+	if e == nil {
+		return "api error"
+	}
+	return fmt.Sprintf("GET %s: HTTP %d", e.URL, e.Status)
+}
+
+// IsUnauthorized reports whether err is an HTTP 401 from the API.
+func IsUnauthorized(err error) bool {
+	var s *StatusError
+	return errors.As(err, &s) && s.Status == http.StatusUnauthorized
+}
+
+// Bootstrap is GET /v1/climan/bootstrap.
+type Bootstrap struct {
+	Service     string `json:"service"`
+	MinVersion  string `json:"min_version"`
+	UserID      string `json:"user_id"`
+	Email       string `json:"email"`
+	ToolsURL    string `json:"tools_url"`
+	ReleasesURL string `json:"releases_url"`
+	SdksURL     string `json:"sdks_url"`
+	Login       string `json:"login"`
+}
+
+// ReleaseTicket is GET /v1/releases/{slug}/{version}/{file}.
+type ReleaseTicket struct {
+	URL           string            `json:"url"`
+	Authorization string            `json:"authorization"`
+	Date          string            `json:"date"`
+	Nonce         string            `json:"nonce"`
+	Expiry        string            `json:"expiry"`
+	Azp           string            `json:"azp"`
+	Sub           string            `json:"sub"`
+	KeyID         string            `json:"key_id"`
+	Headers       map[string]string `json:"headers"`
+}
+
+// SDKArtifact is GET /v1/sdks/{slug}/{version}.
+type SDKArtifact struct {
+	Slug      string `json:"slug"`
+	Version   string `json:"version"`
+	URL       string `json:"url"`
+	SHA256URL string `json:"sha256_url"`
+	Language  string `json:"language"`
+}
+
 // CLICredentials is GET /v1/cli/credentials.
 type CLICredentials struct {
 	UserID    string `json:"user_id"`
@@ -62,9 +119,9 @@ type CLICredentials struct {
 
 // Client talks to api.chained.tools (token/userinfo/credentials) over HTTP.
 type Client struct {
-	APIBase    string
-	HTTP       *http.Client
-	UserAgent  string
+	APIBase   string
+	HTTP      *http.Client
+	UserAgent string
 }
 
 func (c *Client) http() *http.Client {
@@ -207,6 +264,61 @@ func (c *Client) FetchCLICredentials(ctx context.Context, accessToken string) (*
 	return &creds, nil
 }
 
+// FetchBootstrap loads climan session metadata from the API.
+func (c *Client) FetchBootstrap(ctx context.Context, accessToken string) (*Bootstrap, error) {
+	var boot Bootstrap
+	if err := c.getJSON(ctx, c.apiBase()+"/v1/climan/bootstrap", accessToken, &boot); err != nil {
+		return nil, err
+	}
+	return &boot, nil
+}
+
+// FetchTools loads the live tool catalog from the API.
+func (c *Client) FetchTools(ctx context.Context, accessToken string) (*registry.Registry, error) {
+	body, err := c.getBytes(ctx, c.apiBase()+"/v1/climan/tools", accessToken, 4<<20)
+	if err != nil {
+		return nil, err
+	}
+	return registry.ParseCatalog(body)
+}
+
+// FetchReleaseTicket mints a path-bound pull ticket for a first-party artifact.
+func (c *Client) FetchReleaseTicket(ctx context.Context, accessToken, slug, version, file string) (*ReleaseTicket, error) {
+	var ticket ReleaseTicket
+	path := c.apiBase() + "/v1/releases/" + url.PathEscape(slug) + "/" + url.PathEscape(version) + "/" + url.PathEscape(file)
+	if err := c.getJSON(ctx, path, accessToken, &ticket); err != nil {
+		return nil, err
+	}
+	if ticket.URL == "" || ticket.Authorization == "" {
+		return nil, fmt.Errorf("releases ticket missing url or authorization")
+	}
+	return &ticket, nil
+}
+
+// FetchReleaseVersions lists published versions for a first-party product.
+func (c *Client) FetchReleaseVersions(ctx context.Context, accessToken, slug string) ([]string, error) {
+	var info struct {
+		Versions []string `json:"versions"`
+	}
+	if err := c.getJSON(ctx, c.apiBase()+"/v1/releases/"+url.PathEscape(slug), accessToken, &info); err != nil {
+		return nil, err
+	}
+	return info.Versions, nil
+}
+
+// FetchSDKArtifact returns the public download URL for an SDK tarball.
+func (c *Client) FetchSDKArtifact(ctx context.Context, accessToken, slug, version string) (*SDKArtifact, error) {
+	var art SDKArtifact
+	path := c.apiBase() + "/v1/sdks/" + url.PathEscape(slug) + "/" + url.PathEscape(version)
+	if err := c.getJSON(ctx, path, accessToken, &art); err != nil {
+		return nil, err
+	}
+	if art.URL == "" {
+		return nil, fmt.Errorf("sdk artifact missing url")
+	}
+	return &art, nil
+}
+
 func (c *Client) postToken(ctx context.Context, tokenURL string, form url.Values) (*TokenSet, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, tokenURL, strings.NewReader(form.Encode()))
 	if err != nil {
@@ -241,9 +353,20 @@ func (c *Client) postToken(ctx context.Context, tokenURL string, form url.Values
 }
 
 func (c *Client) getJSON(ctx context.Context, rawURL, bearer string, dest any) error {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
+	body, err := c.getBytes(ctx, rawURL, bearer, 1<<20)
 	if err != nil {
 		return err
+	}
+	if err := json.Unmarshal(body, dest); err != nil {
+		return fmt.Errorf("GET %s: parse: %w", rawURL, err)
+	}
+	return nil
+}
+
+func (c *Client) getBytes(ctx context.Context, rawURL, bearer string, limit int64) ([]byte, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
+	if err != nil {
+		return nil, err
 	}
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("User-Agent", c.userAgent())
@@ -252,18 +375,15 @@ func (c *Client) getJSON(ctx context.Context, rawURL, bearer string, dest any) e
 	}
 	resp, err := c.http().Do(req)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer resp.Body.Close()
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	body, err := io.ReadAll(io.LimitReader(resp.Body, limit))
 	if err != nil {
-		return fmt.Errorf("GET %s: read: %w", rawURL, err)
+		return nil, fmt.Errorf("GET %s: read: %w", rawURL, err)
 	}
 	if resp.StatusCode >= 400 {
-		return fmt.Errorf("GET %s: HTTP %d", rawURL, resp.StatusCode)
+		return nil, &StatusError{Status: resp.StatusCode, URL: rawURL, Body: string(body)}
 	}
-	if err := json.Unmarshal(body, dest); err != nil {
-		return fmt.Errorf("GET %s: parse: %w", rawURL, err)
-	}
-	return nil
+	return body, nil
 }

@@ -160,6 +160,28 @@ func Download(ctx context.Context, url, dest string) error {
 	return fmt.Errorf("neither curl nor wget is available")
 }
 
+// DownloadWithHeaders fetches url into dest, sending extra HTTP headers (curl only).
+func DownloadWithHeaders(ctx context.Context, url, dest string, headers map[string]string) error {
+	if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
+		return err
+	}
+	curl, err := exec.LookPath("curl")
+	if err != nil {
+		return fmt.Errorf("curl is required for authenticated downloads: %w", err)
+	}
+	args := []string{"-fsSL", "--retry", "3", "-o", dest}
+	for k, v := range headers {
+		args = append(args, "-H", k+": "+v)
+	}
+	args = append(args, url)
+	cmd := exec.CommandContext(ctx, curl, args...)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		_ = os.Remove(dest)
+		return fmt.Errorf("curl %s: %w: %s", url, err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
 // OS returns the lowercase GOOS for asset URLs.
 func OS() string { return runtime.GOOS }
 

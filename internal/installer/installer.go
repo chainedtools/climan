@@ -16,6 +16,7 @@ import (
 	"strings"
 	"time"
 
+	"go.solved.gg/climan/internal/auth"
 	"go.solved.gg/climan/internal/registry"
 	"go.solved.gg/climan/internal/system"
 )
@@ -64,6 +65,10 @@ type Installer struct {
 	DryRun bool
 	// HTTPClient is used for GitHub API/latest lookups.
 	HTTPClient *http.Client
+	// API talks to api.chained.tools for first-party tickets and SDK URLs.
+	API *auth.Client
+	// AccessToken is the Clerk bearer used for API catalog/ticket calls.
+	AccessToken string
 
 	reg *registry.Registry
 }
@@ -79,6 +84,13 @@ func New() *Installer {
 
 // Registry returns the tool catalog the installer uses.
 func (i *Installer) Registry() *registry.Registry { return i.reg }
+
+// UseRegistry replaces the catalog (live API tools after login).
+func (i *Installer) UseRegistry(r *registry.Registry) {
+	if r != nil {
+		i.reg = r
+	}
+}
 
 // runner returns a Runner wired to this installer's output.
 func (i *Installer) runner() *system.Runner {
@@ -99,7 +111,7 @@ func (i *Installer) Status(t *registry.Tool, desired string) Status {
 	if !ok {
 		// Binary-installed tools may live in BinDir rather than PATH.
 		for _, m := range t.Install {
-			if m.Kind != registry.MethodBinary {
+			if m.Kind != registry.MethodBinary && m.Kind != registry.MethodReleases {
 				continue
 			}
 			cand := filepath.Join(i.BinDir, m.ExeIn)
@@ -135,6 +147,10 @@ func (i *Installer) describe(t *registry.Tool) string {
 		return "official install script"
 	case registry.MethodBinary:
 		return fmt.Sprintf("GitHub release binary (%s)", m.Repo)
+	case registry.MethodReleases:
+		return fmt.Sprintf("releases.chained.tools (%s)", m.Slug)
+	case registry.MethodSdks:
+		return fmt.Sprintf("sdks.chained.tools (%s)", m.Slug)
 	case registry.MethodNPM:
 		return fmt.Sprintf("npm package %s", m.NpmPackage)
 	case registry.MethodGit:
@@ -251,7 +267,7 @@ func (i *Installer) Remove(ctx context.Context, t *registry.Tool) error {
 					errs = append(errs, fmt.Sprintf("remove %s: %v", dir, err))
 				}
 			}
-		case registry.MethodBinary:
+		case registry.MethodBinary, registry.MethodReleases:
 			dest := filepath.Join(i.BinDir, m.ExeIn)
 			if fi, err := os.Stat(dest); err == nil && !fi.IsDir() {
 				if err := os.Remove(dest); err == nil {
@@ -314,6 +330,10 @@ func (i *Installer) apply(ctx context.Context, t *registry.Tool, m registry.Meth
 		return i.self(ctx, t, m)
 	case registry.MethodBinary:
 		return i.binary(ctx, t, m, version)
+	case registry.MethodReleases:
+		return i.releases(ctx, t, m, version)
+	case registry.MethodSdks:
+		return i.sdks(ctx, t, m, version)
 	default:
 		return fmt.Errorf("unknown method kind %q", m.Kind)
 	}
@@ -520,6 +540,115 @@ func extractBinary(archive, dest, want string) error {
 		return out.Close()
 	}
 	return fmt.Errorf("archive %s contains no file named %q", archive, want)
+}
+
+func (i *Installer) releases(ctx context.Context, t *registry.Tool, m registry.Method, version string) error {
+	if i.API == nil {
+		return fmt.Errorf("releases install requires API client (run climan login)")
+	}
+	if i.AccessToken == "" {
+		return fmt.Errorf("not signed in — run 'climan login'")
+	}
+	osName, arch := registry.OSArch()
+	if mapped, ok := m.ArchMap[arch]; ok {
+		arch = mapped
+	}
+	ver := version
+	if ver == "" || ver == "latest" {
+		versions, err := i.API.FetchReleaseVersions(ctx, i.AccessToken, m.Slug)
+		if err != nil {
+			return fmt.Errorf("list %s versions: %w", t.Name, err)
+		}
+		if len(versions) == 0 {
+			return fmt.Errorf("no published versions for %s", m.Slug)
+		}
+		ver = versions[len(versions)-1]
+	} else {
+		ver = registry.VersionForBinary(ver)
+	}
+	asset := strings.NewReplacer(
+		"{version}", ver,
+		"{os}", osName,
+		"{arch}", arch,
+		"{exe}", m.ExeIn,
+	).Replace(m.Asset)
+	dest := filepath.Join(i.BinDir, m.ExeIn)
+	if i.DryRun {
+		i.logf("    [dry-run] releases %s/%s/%s -> %s", m.Slug, ver, asset, dest)
+		return nil
+	}
+	ticket, err := i.API.FetchReleaseTicket(ctx, i.AccessToken, m.Slug, ver, asset)
+	if err != nil {
+		return err
+	}
+	headers := ticket.Headers
+	if len(headers) == 0 {
+		headers = map[string]string{
+			"Authorization":     ticket.Authorization,
+			"X-Releases-Date":   ticket.Date,
+			"X-Releases-Nonce":  ticket.Nonce,
+			"X-Releases-Expiry": ticket.Expiry,
+			"X-Releases-Azp":    ticket.Azp,
+			"X-Releases-Sub":    ticket.Sub,
+			"X-Releases-Key-Id": ticket.KeyID,
+		}
+	}
+	i.logf("    downloading %s", ticket.URL)
+	tmp, err := os.CreateTemp("", "climan-*"+filepath.Ext(asset))
+	if err != nil {
+		return err
+	}
+	_ = tmp.Close()
+	defer func() { _ = os.Remove(tmp.Name()) }()
+	if err := system.DownloadWithHeaders(ctx, ticket.URL, tmp.Name(), headers); err != nil {
+		return err
+	}
+	if err := extractBinary(tmp.Name(), dest, m.ExeIn); err != nil {
+		return err
+	}
+	if err := os.Chmod(dest, 0o755); err != nil {
+		return err
+	}
+	i.logf("    installed %s -> %s", m.ExeIn, dest)
+	return nil
+}
+
+func (i *Installer) sdks(ctx context.Context, t *registry.Tool, m registry.Method, version string) error {
+	ver := version
+	if ver == "" || ver == "latest" {
+		return fmt.Errorf("%s: pin a version (e.g. climan add %s --version 0.1.1)", t.Name, t.Name)
+	}
+	ver = registry.VersionForBinary(ver)
+	var url string
+	if i.API != nil && i.AccessToken != "" {
+		art, err := i.API.FetchSDKArtifact(ctx, i.AccessToken, m.Slug, ver)
+		if err != nil {
+			return err
+		}
+		url = art.URL
+	} else {
+		url = fmt.Sprintf("https://sdks.chained.tools/%s/%s/%s-%s.tar.gz", m.Slug, ver, m.Slug, ver)
+	}
+	dest := filepath.Join(system.Home(), ".cache", "climan", "sdks", m.Slug+"-"+ver+".tar.gz")
+	if i.DryRun {
+		i.logf("    [dry-run] download %s -> %s", url, dest)
+		return nil
+	}
+	i.logf("    downloading %s", url)
+	if err := system.Download(ctx, url, dest); err != nil {
+		return err
+	}
+	i.logf("    saved %s", dest)
+	if t.Language == "zig" {
+		if _, err := system.LookPath("zig"); err == nil {
+			if _, err := i.runner().RunContext(ctx, "zig", "fetch", "--save", dest); err != nil {
+				i.logf("    zig fetch --save failed: %v (tarball is at %s)", err, dest)
+			}
+		} else {
+			i.logf("    zig fetch --save %s", dest)
+		}
+	}
+	return nil
 }
 
 // orVersion formats a desired version for log output.

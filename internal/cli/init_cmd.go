@@ -28,11 +28,12 @@ reconcile your system.`,
 			if _, err := os.Stat(path); err == nil && !force {
 				return fmt.Errorf("%s already exists (use --force to overwrite)", path)
 			}
-			if err := config.DefaultManifest().Save(path); err != nil {
+			manifest := config.DefaultManifestWith(a.reg)
+			if err := manifest.Save(path); err != nil {
 				return err
 			}
 			a.printf("wrote %s\n", path)
-			a.println(config.DefaultManifest().Summary())
+			a.println(manifest.Summary())
 			a.println("next: climan install")
 			return nil
 		},

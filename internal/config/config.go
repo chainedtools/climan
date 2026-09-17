@@ -42,10 +42,17 @@ func DefaultBinDir() string {
 
 // DefaultManifest returns a manifest declaring every known tool at "latest".
 func DefaultManifest() *Config {
-	reg := registry.New()
+	return DefaultManifestWith(registry.New())
+}
+
+// DefaultManifestWith declares tools from reg that are marked for init.
+func DefaultManifestWith(reg *registry.Registry) *Config {
 	cfg := &Config{Version: ConfigVersion, BinDir: DefaultBinDir()}
-	for _, name := range reg.Names() {
-		cfg.Tools = append(cfg.Tools, ToolRef{Name: name, Version: "latest"})
+	for _, t := range reg.All() {
+		if !t.Init {
+			continue
+		}
+		cfg.Tools = append(cfg.Tools, ToolRef{Name: t.Name, Version: "latest"})
 	}
 	return cfg
 }
@@ -96,6 +103,31 @@ func Load(path string) (*Config, error) {
 	return cfg, nil
 }
 
+// LoadWith is Load, validating tool names against the given registry.
+func LoadWith(path string, reg *registry.Registry) (*Config, error) {
+	if path == "" {
+		path = FindPath()
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return DefaultManifestWith(reg), nil
+		}
+		return nil, fmt.Errorf("read manifest %s: %w", path, err)
+	}
+	cfg := &Config{}
+	if err := yaml.Unmarshal(data, cfg); err != nil {
+		return nil, fmt.Errorf("parse manifest %s: %w", path, err)
+	}
+	if cfg.Version == 0 {
+		cfg.Version = ConfigVersion
+	}
+	if err := cfg.ValidateWith(reg); err != nil {
+		return nil, fmt.Errorf("invalid manifest %s: %w", path, err)
+	}
+	return cfg, nil
+}
+
 // Save writes the manifest atomically.
 func (c *Config) Save(path string) error {
 	if path == "" {
@@ -115,15 +147,19 @@ func (c *Config) Save(path string) error {
 	return os.Rename(tmp, path)
 }
 
-// Validate checks the manifest against the registry.
+// Validate checks the manifest against the built-in registry.
 func (c *Config) Validate() error {
+	return c.ValidateWith(registry.New())
+}
+
+// ValidateWith checks the manifest against the given registry.
+func (c *Config) ValidateWith(reg *registry.Registry) error {
 	if c.Version != ConfigVersion {
 		return fmt.Errorf("unsupported manifest version %d (want %d)", c.Version, ConfigVersion)
 	}
 	if c.BinDir == "" {
 		c.BinDir = DefaultBinDir()
 	}
-	reg := registry.New()
 	seen := map[string]bool{}
 	for i, t := range c.Tools {
 		if t.Name == "" {
@@ -165,7 +201,11 @@ func (c *Config) Has(name string) bool {
 
 // Add inserts or updates a tool, keeping manifest order deterministic.
 func (c *Config) Add(name, version string) error {
-	reg := registry.New()
+	return c.AddWith(registry.New(), name, version)
+}
+
+// AddWith inserts or updates a tool using the given registry for name checks.
+func (c *Config) AddWith(reg *registry.Registry, name, version string) error {
 	if _, ok := reg.Get(name); !ok {
 		return fmt.Errorf("unknown tool %q (known: %s)", name, reg.SuggestNames())
 	}
